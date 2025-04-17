@@ -11,15 +11,6 @@ library(IRanges)
 ```
 
 ## Simulated example segment data (replace with your own)
-```{r, eval=FALSE}
-segments <- data.frame(
-  start = c(1, 5001, 9001),
-  end = c(5000, 9000, 15000),
-  copy_number = c(4, 2, 3)
-)
-```
-
-
 ```{r}
 set.seed(123)
 
@@ -45,6 +36,13 @@ segments <- data.frame(
 )
 ```
 
+## Ted feedback: subtract 2 from all copy number values
+```{r}
+segments$copy_number <- segments$copy_number-2
+print(segments$copy_number)
+```
+
+
 ## Create Genomic Windows and Calculate Weighted Averages
 ```{r}
 # Create IRanges object for segments
@@ -62,7 +60,7 @@ weighted_avgs <- sapply(seq_along(windows), function(i) { #
   overlap_widths <- width(overlaps)
   
   valid_idx <- which(overlap_widths > 0)
-  if (length(valid_idx) == 0) return(NA)
+  if (length(valid_idx) == 0) return(NA) # Function returns NA whenever a given window doesn't overlap with ANY segment.
   
   overlap_weights <- overlap_widths[valid_idx] / width(win)
   copy_vals <- segments$copy_number[valid_idx]
@@ -73,12 +71,12 @@ weighted_avgs <- sapply(seq_along(windows), function(i) { #
   sum(copy_vals * overlap_weights)
   
 })
+
+print(weighted_avgs)
 ```
-
-
+## Ted feedback: now add 2 back!
 ```{r}
-# LIMITATION: when there is no segment, assume 2! Suggested fix: when importing segment, subtract 2 to make all values relative to a 2n state. Add back 2 at the end (after the weighted averages are calculated). Could also just add in 2 where there are no segments.
+weighted_avgs <- weighted_avgs+2
+print(weighted_avgs)
 ```
-
-
 
