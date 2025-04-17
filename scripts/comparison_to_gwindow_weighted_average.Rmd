@@ -1,0 +1,84 @@
+---
+title: "Window Average Testing"
+output: html_notebook
+---
+
+
+# attempt 1 - from GPT-4o
+```{r}
+#install.packages("IRanges")  # from Bioconductor if not already installed
+library(IRanges)
+```
+
+## Simulated example segment data (replace with your own)
+```{r, eval=FALSE}
+segments <- data.frame(
+  start = c(1, 5001, 9001),
+  end = c(5000, 9000, 15000),
+  copy_number = c(4, 2, 3)
+)
+```
+
+
+```{r}
+set.seed(123)
+
+# Simulate 50 segments across a 5 million bp region
+n_segments <- 50
+chrom_length <- 5e6
+
+# Random start positions
+segment_starts <- sort(sample(1:(chrom_length - 10000), n_segments))
+segment_ends <- segment_starts + sample(1000:50000, n_segments, replace = TRUE)
+
+# Cap segment ends at chrom_length
+segment_ends[segment_ends > chrom_length] <- chrom_length
+
+# Random copy numbers (e.g., 0 to 6)
+copy_numbers <- sample(0:6, n_segments, replace = TRUE)
+
+# Build the data frame
+segments <- data.frame(
+  start = segment_starts,
+  end = segment_ends,
+  copy_number = copy_numbers
+)
+```
+
+## Create Genomic Windows and Calculate Weighted Averages
+```{r}
+# Create IRanges object for segments
+seg_ranges <- IRanges(start = segments$start, end = segments$end)
+
+# Set up fixed windows of 200kb
+window_size <- 200000
+windows <- IRanges(start = seq(1, chrom_length, by = window_size), width = window_size)
+
+weighted_avgs <- sapply(seq_along(windows), function(i) { # 
+  
+  win <- windows[i] # win is a IRanges who's length of start and width = 1 (information start position and width of window[i])
+  win_repeated <- rep(win, length(seg_ranges))
+  overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
+  overlap_widths <- width(overlaps)
+  
+  valid_idx <- which(overlap_widths > 0)
+  if (length(valid_idx) == 0) return(NA)
+  
+  overlap_weights <- overlap_widths[valid_idx] / width(win)
+  copy_vals <- segments$copy_number[valid_idx]
+  
+  #if (length(valid_idx==1)) {copy_vals
+  #} else {sum(copy_vals * overlap_weights)} # sum(copy_vals * overlap_weights) I added in the if statement as in my head it doesn't make sense to shrink the copy number if there is only 1 segment.
+  
+  sum(copy_vals * overlap_weights)
+  
+})
+```
+
+
+```{r}
+# LIMITATION: when there is no segment, assume 2! Suggested fix: when importing segment, subtract 2 to make all values relative to a 2n state. Add back 2 at the end (after the weighted averages are calculated). Could also just add in 2 where there are no segments.
+```
+
+
+
