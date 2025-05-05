@@ -1,82 +1,271 @@
 ---
-title: "Window Average Testing"
-output: html_notebook
+title: "Moving Weighted Average - Test on SCEVAN & ASCAT Segmentation Files"
+output: none
 ---
 
+# install dependencies
+```{r, eval=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
 
-# attempt 1 - from GPT-4o
+if (!require("IRanges", quietly = TRUE))
+    BiocManager::install("IRanges")
+```
+
+# import dependencies
 ```{r}
-#install.packages("IRanges")  # from Bioconductor if not already installed
 library(IRanges)
+library(dplyr)
 ```
 
-## Simulated example segment data (replace with your own)
+
+# define envrionment variable (won't be used in this test, just writing it here so it's available for copy-paste into the version used to analyze all our data)
 ```{r}
-set.seed(123)
-
-# Simulate 50 segments across a 5 million bp region
-n_segments <- 50
-chrom_length <- 5e6
-
-# Random start positions
-segment_starts <- sort(sample(1:(chrom_length - 10000), n_segments))
-segment_ends <- segment_starts + sample(1000:50000, n_segments, replace = TRUE)
-
-# Cap segment ends at chrom_length
-segment_ends[segment_ends > chrom_length] <- chrom_length
-
-# Random copy numbers (e.g., 0 to 6)
-copy_numbers <- sample(0:6, n_segments, replace = TRUE)
-
-# Build the data frame
-segments <- data.frame(
-  start = segment_starts,
-  end = segment_ends,
-  copy_number = copy_numbers
-)
+# index <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID"))
+index <- 1
 ```
 
-## Ted feedback: subtract 2 from all copy number values
+
+# load input mapping file
 ```{r}
-segments$copy_number <- segments$copy_number-2
-print(segments$copy_number)
+map <- read.csv("/scratch/dgladish/benchmarking_spatial_scale/mapping_files/alg_out_paths.csv")
+print(paste("Analysis of sample", map$sample_id[index]))
 ```
 
 
-## Create Genomic Windows and Calculate Weighted Averages
+
+# import data
 ```{r}
-# Create IRanges object for segments
-seg_ranges <- IRanges(start = segments$start, end = segments$end)
-
-# Set up fixed windows of 200kb
-window_size <- 200000
-windows <- IRanges(start = seq(1, chrom_length, by = window_size), width = window_size)
-
-weighted_avgs <- sapply(seq_along(windows), function(i) { # 
-  
-  win <- windows[i] # win is a IRanges who's length of start and width = 1 (information start position and width of window[i])
-  win_repeated <- rep(win, length(seg_ranges))
-  overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
-  overlap_widths <- width(overlaps)
-  
-  valid_idx <- which(overlap_widths > 0)
-  if (length(valid_idx) == 0) return(NA) # Function returns NA whenever a given window doesn't overlap with ANY segment.
-  
-  overlap_weights <- overlap_widths[valid_idx] / width(win)
-  copy_vals <- segments$copy_number[valid_idx]
-  
-  #if (length(valid_idx==1)) {copy_vals
-  #} else {sum(copy_vals * overlap_weights)} # sum(copy_vals * overlap_weights) I added in the if statement as in my head it doesn't make sense to shrink the copy number if there is only 1 segment.
-  
-  sum(copy_vals * overlap_weights)
-  
-})
-
-print(weighted_avgs)
+ascat_segs <- read.delim(map$ascat_seg_path[index], stringsAsFactors = FALSE)
+scevan_segs <- read.delim(map$scevan_seg_path[index], stringsAsFactors = FALSE)
 ```
-## Ted feedback: now add 2 back!
+
+# import Ted's chromosome coordinates
 ```{r}
-weighted_avgs <- weighted_avgs+2
-print(weighted_avgs)
+path_chrom_lengths <- "/scratch/dgladish/benchmarking_spatial_scale/chrom_lengths/HG38.txt"
+chrom_lengths <- read.delim(path_chrom_lengths, stringsAsFactors = FALSE, header=F)
+chrom_lengths[, 3] <- sub("chr", "", chrom_lengths[, 1])
+
+chrom_lengths[, 3] <- sub("X", "23", chrom_lengths[, 3])
+chrom_lengths[, 3] <- sub("Y", "24", chrom_lengths[, 3])
 ```
 
+
+# make copy number values relative to 2
+```{r}
+# ASCAT
+ascat_segs$Copy_Number <- ascat_segs$Copy_Number-2
+print(ascat_segs$Copy_Number)
+```
+
+
+
+
+```{r}
+# SCEVAN
+scevan_segs$CN <- scevan_segs$CN-2
+print(scevan_segs$CN)
+```
+
+# calculate window averages for ASCAT segments
+## add in an additional chromosome column to the ASCAT segmentation file
+```{r}
+ascat_segs$Chromosome_numeric <- sub("chr", "", ascat_segs$Chromosome)
+ascat_segs$Chromosome_numeric <- sub("X", "23", ascat_segs$Chromosome_numeric)
+ascat_segs$Chromosome_numeric <- sub("Y", "24", ascat_segs$Chromosome_numeric)
+
+ascat_segs$Chromosome_numeric <- as.numeric(ascat_segs$Chromosome_numeric)
+```
+
+
+## define window size
+```{r}
+window_size <- 1000000
+```
+
+## calculate the # of windows roughly that will be used for each chromosome (HG38 lengths, not ASCAT, so results might be a bit different, but should be identical or very close)
+```{r}
+windows_per_chrom <- ceiling(chrom_lengths[, 2] / window_size)
+print(windows_per_chrom)
+```
+## calculate the total # of windows roughly that will be used in this analysis
+```{r}
+total_windows <- sum(windows_per_chrom)
+print(total_windows)
+```
+
+
+
+## run the analysis
+```{r}
+ascat_WAs <- numeric() # vector will be filled by each iteration, first with the chromosome 1 windows, then chromosome 2, etc etc
+
+for (i in 1:max(ascat_segs$Chromosome_numeric)) {
+  #browser()
+  ascat_segs_subset <- ascat_segs[which(ascat_segs$Chromosome_numeric==i), ] # create the subset of the data frame so that you are only analyzing 1 chromosome at a time
+  
+  seg_ranges <- IRanges(start = ascat_segs_subset$Start, end = ascat_segs_subset$End) 
+  chrom_length <- chrom_lengths[which(chrom_lengths[, 3]==i), 2]
+  
+  # Set up fixed windows of 1Mb
+  windows <- IRanges(start = seq(1, chrom_length, by = window_size), width = window_size)
+  
+  ascat_loop_WAs <-  sapply(seq_along(windows), function(j) {
+    #browser()
+    win <- windows[j]
+    win_repeated <- rep(win, length(seg_ranges))
+    overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
+    overlap_widths <- width(overlaps)
+    
+    valid_idx <- which(overlap_widths > 0)
+    if (length(valid_idx) == 0) return(NA)
+    
+    overlap_weights <- overlap_widths[valid_idx] / width(win)
+    copy_vals <- ascat_segs_subset$Copy_Number[valid_idx]
+    
+    sum(copy_vals * overlap_weights)
+    
+    
+  })
+  names(ascat_loop_WAs) <- rep(ascat_segs_subset$Chromosome[1], times=length(ascat_loop_WAs))
+  
+  ascat_WAs <- c(ascat_WAs, ascat_loop_WAs)
+}
+```
+
+# Looks good! Now calculate moving averages for the SCEVAN data!
+## initialize an empty vector that will hold the output of the loop
+```{r}
+scevan_WAs <- numeric()
+
+for (i in 1:max(scevan_segs$Chr)) {
+  #browser()
+  scevan_segs_subset <- scevan_segs[which(scevan_segs$Chr==i), ] # create the subset of the data frame so that you are only analyzing 1 chromosome at a time
+  
+  seg_ranges <- IRanges(start = scevan_segs_subset$Pos, end = scevan_segs_subset$End) # convert the data frame holding the subset of the segmentation data to an IRanges object so that the IRanges function pintersect() may be used on the data
+  chrom_length <- chrom_lengths[which(chrom_lengths[, 3]==i), 2] # determine the end point of the chromosomes. This will be used to determine the number of windows that will be used in the analysis of the chromosome being analyzed in a given iteration.
+  
+  # Set up fixed windows of 1Mb
+  windows <- IRanges(start = seq(1, chrom_length, by = window_size), width = window_size) 
+  
+  # for each chromosome, this analysis will be looped, shifting the window each time (i.e. chr1 is first analyzed   with 1-1,000,000, then 1,000,001-2,000,000, etc. then repeat for chromosome 2, then 3, etc.).
+  scevan_loop_WAs <- sapply(seq_along(windows), function(j) { 
+    #browser()
+    win <- windows[j] # selects the window to use (e.g. 1-1,000,000)
+    win_repeated <- rep(win, length(seg_ranges))
+    overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
+    overlap_widths <- width(overlaps)
+    
+    valid_idx <- which(overlap_widths > 0)
+    if (length(valid_idx) == 0) return(NA) # 
+    
+    overlap_weights <- overlap_widths[valid_idx] / width(win)
+    copy_vals <- scevan_segs_subset$CN[valid_idx]
+    
+    sum(copy_vals * overlap_weights)
+    
+    
+  })
+  #browser()
+  current_chrom <- scevan_segs_subset$Chr[1]
+  for_names_scevan_loop_WAs <- sub(current_chrom, paste(c("chr", current_chrom), collapse=""), current_chrom)
+  names(scevan_loop_WAs) <- rep(for_names_scevan_loop_WAs, times=length(scevan_loop_WAs))
+  
+  scevan_WAs <- c(scevan_WAs, scevan_loop_WAs)
+}
+```
+
+## do a quick investigation of the output so I understand what I am working with
+### NAs
+#### are there any NA values? if so, where are they localized/concentrated?
+##### ASCAT
+```{r}
+if (any(is.na(ascat_WAs))) {
+  print(paste("There are", sum(is.na(ascat_WAs)), "NAs in ascat_WAs! There was at least 1 window that did not have any segment overlap!"))
+  
+  # convert MA output vector to a list
+  #browser()
+  #original_order <- names(ascat_WAs)
+  ascat_WAs_list <- split(ascat_WAs, names(ascat_WAs))
+  na_positions_normalized_list <- lapply(ascat_WAs_list, function(x) {which(is.na(x)) / length(x)}) # extract locations of the NA values & normalize by chromosome length (indices closer to 0 will be front of the chromosome & those closer to 1 will be towards the end of the chromosome)
+  na_positions_normalized_vec <- unlist(na_positions_normalized_list, use.names = TRUE) # create a named vector from the list containing the normalized NA locations
+  #na_positions_normalized <- na_positions_normalized[original_order]
+  
+  # create a histogram visualizing the locations of the NA values
+  hist(na_positions_normalized_vec, breaks = 10, main = "ASCAT - Empty Window Locations",
+     xlab = "Normalized Window Position (Index in Vector / Vector Length)",
+     col = "#00F5FF", border = "white")
+
+
+  # bar plots
+  ## number of windows / chromosome
+  #browser()
+  original_order <- unique(names(ascat_WAs))
+  windows_per_chrom_ascat <- sapply(ascat_WAs_list, length)
+  windows_per_chrom_ascat <- windows_per_chrom_ascat[original_order]
+  
+  barplot(windows_per_chrom_ascat, las=2, col = "skyblue", main = "ASCAT - Total Windows Per Chromosome", ylim = c(0, 250))
+  
+  ## number of empty windows / chromosome
+  nas_per_chrs <- sapply(ascat_WAs_list, function(x) {sum(is.na(x))})
+  nas_per_chrs <- nas_per_chrs[original_order]
+  barplot(nas_per_chrs, las=2, col="blue", main = "ASCAT - Empty Windows Per Chromosome", ylim = c(0, 25))
+  
+  } else {
+  print("There are no NAs in ascat_WAs! All windows had at least 1 segment span them.")
+  }
+```
+##### SCEVAN 
+```{r}
+if (any(is.na(scevan_WAs))) {
+  print(paste("There are", sum(is.na(scevan_WAs)), "NAs in scevan_WAs! There was at least 1 window that did not have any segment overlap!"))
+  
+  # histogram
+  ## convert MA output vector to a list
+  scevan_WAs_list <- split(scevan_WAs, names(scevan_WAs))
+  
+  scevan_ordered_names <- unique(names(scevan_WAs))
+  scevan_WAs_list <- scevan_WAs_list[scevan_ordered_names]
+  
+  na_positions_normalized <- lapply(scevan_WAs_list, function(x) {which(is.na(x)) / length(x)}) # extract locations of the NA values & normalize by chromosome length (indices closer to 0 will be front of the chromosome & those closer to 1 will be towards the end of the chromosome)
+  na_positions_normalized <- unlist(na_positions_normalized, use.names = TRUE) # create a named vector from the list containing the normalized NA locations
+  
+  ## create a histogram visualizing the locations of the NA values
+  hist(na_positions_normalized, breaks = 10, main = "SCEVAN - Empty Window Locations",
+     xlab = "Normalized Window Position (Index in Vector / Vector Length)",
+     col = "deeppink", border = "white")
+  
+  # bar plots
+  ## number of windows / chromosome
+  windows_per_chrom_scevan <- sapply(scevan_WAs_list, length)
+  windows_per_chrom_scevan <- windows_per_chrom_scevan[original_order]
+  
+  barplot(windows_per_chrom_scevan, las=2, col = "#FFE1FF", main = "SCEVAN - Number of Total Windows Per Chromosome", ylim=c(0, 250))
+  
+  ## number of empty windows / chromosome
+  ## sum the number of NA windows for each chromosome
+  nas_per_chrs <- sapply(scevan_WAs_list, function(x) {sum(is.na(x))})
+  nas_per_chrs <- nas_per_chrs[original_order]
+  
+  ## create the bar plot showing the number of empty windows / chromosome
+  barplot(nas_per_chrs, las=2, col = "red", main = "SCEVAN - Number of Empty Windows Per Chromosome", ylim=c(0, 25))
+  
+  } else {
+    
+  print("There are no NAs in scevan_WAs! All windows had at least 1 segment span them.")
+    
+  }
+```
+##### Also, create a bar plot that shows the # of windows that do not have windows in them for SCEVAN
+```{r}
+num_NAs <-c(sum(is.na(scevan_WAs)), sum(is.na(ascat_WAs)))
+names(num_NAs) <- c("SCEVAN", "ASCAT")
+
+barplot(num_NAs, main="Number of Empty Windows for Each Algorithm", col=c("#C1440E", "#3B6BA5"), ylim=c(0, 100))
+```
+
+# Add back 2 to each of the windows. The mathematical property 
+```{r}
+ascat_WAs <- ascat_WAs+2
+scevan_WAs <- scevan_WAs+2
+```
