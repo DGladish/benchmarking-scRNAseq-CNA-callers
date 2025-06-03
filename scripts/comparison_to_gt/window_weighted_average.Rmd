@@ -101,7 +101,7 @@ for (i in 1:max(ascat_segs$Chromosome_numeric)) {
     overlap_widths <- width(overlaps)
     
     valid_idx <- which(overlap_widths > 0)
-    if (length(valid_idx) == 0) return(NA)
+    if (length(valid_idx) == 0) return(0) # assume copy number of 2 when there is no segment overlap. 0 is used because 2 was taken away at start
     
     overlap_weights <- overlap_widths[valid_idx] / width(win)
     copy_vals <- ascat_segs_subset$Copy_Number[valid_idx]
@@ -138,7 +138,7 @@ for (i in 1:max(scevan_segs$Chr)) {
     overlap_widths <- width(overlaps)
     
     valid_idx <- which(overlap_widths > 0)
-    if (length(valid_idx) == 0) return(NA) # 
+    if (length(valid_idx) == 0) return(0) # assume copy number of 2 when there is no segment overlap
     
     overlap_weights <- overlap_widths[valid_idx] / width(win)
     copy_vals <- scevan_segs_subset$CN[valid_idx]
@@ -189,7 +189,7 @@ ascat_windows_per_chr <- lapply(ascat_WAs_list, length)
 print(ascat_windows_per_chr)
 
 
-print(paste("There are segmentation files from 2 algorithms being analyzed one chromosome at a time. Are the same number of windows used to analyze each chromosome?", identical(ascat_windows_per_chr[!(names(ascat_windows_per_chr) %in% c("chrX", "chrY"))], scevan_windows_per_chr)))
+print(paste("There are segmentation files from 2 algorithms being analyzed one chromosome at a time. Are the same number of windows used to analyze each chromosome? True or False:", identical(ascat_windows_per_chr[!(names(ascat_windows_per_chr) %in% c("chrX", "chrY"))], scevan_windows_per_chr)))
 
 
 # similarity metrics
@@ -334,32 +334,11 @@ na_positions_scevan <- lapply(bin_wins[grep("scevan", names(bin_wins))], functio
 if (all(sapply(combn(seq_along(na_positions_scevan), 2, simplify = FALSE), 
                function(idx) identical(na_positions_scevan[[idx[1]]], na_positions_scevan[[idx[2]]])))) {print("NAs present in the 3 ASCAT vectors are all in the same position")}
 
-na_positions_all <- lapply(bin_wins, function(x) {which(is.na(x))})
-na_positions_autosomes <- lapply(na_positions_all, function(x) {
-  x <- x[!grepl("chrX", names(x))]
-  return(x)
-})
-
-if (all(sapply(combn(seq_along(bin_wins), 2, simplify = FALSE),
-               function(idx) identical(na_positions_autosomes[[idx[1]]], na_positions_autosomes[[idx[2]]])))) {print("NAs in ASCAT and SCEVAN vectors are all in the same position")
-} else {
-    print("NAs in the ASCAT vectors are not located at the same positions as NAs in the SCEVAN vectors")
-}
 
 
-###### Eliminate any element in the vector pairs that have an NA (i.e. if at least 1 window in a SCEVAN & ASCAT vector pair that corresponds to the same genomic position has value NA, eliminate the window from both vectors)
+###### Eliminate any windows associated with sex chromosomes
 bin_wins_autosomes <- lapply(bin_wins, function(x) {
-  x <- x[!grepl("chrX", names(x))]
-  return(x)
-})
-
-na_positions_ascat_autosomes <- na_positions_autosomes[grep("ascat", names(na_positions_autosomes))][[1]]
-na_positions_scevan <- na_positions_autosomes[grep("scevan", names(na_positions_autosomes))][[1]] # scevan by default only outputs autosomal data
-
-na_positions_autosomes_union <- union(na_positions_ascat_autosomes, na_positions_scevan)
-
-bin_wins_autosomes <- lapply(bin_wins_autosomes, function(x) {
-  x <- x[-c(na_positions_autosomes_union)]
+  x <- x[!grepl("chrX|chrY", names(x))]
   return(x)
 })
 
@@ -431,15 +410,9 @@ convert_to_bin_tg <- function(x) {
 ascat_bin_wins_tg <- convert_to_bin_tg(ascat_WAs)
 scevan_bin_wins_tg <- convert_to_bin_tg(scevan_WAs)
 
-###### eliminate any windows associated with sex chromosomes & any windows where either SCEVAN or ASCAT contains an NA
+###### eliminate any windows associated with sex chromosomes
 ascat_bin_wins_autosomes_tg <- ascat_bin_wins_tg[-which(names(ascat_bin_wins_tg) %in% c("chrX", "chrY"))]
 
-na_positions_ascat_tg <- which(is.na(ascat_bin_wins_autosomes_tg))
-na_positions_scevan_tg <- which(is.na(scevan_bin_wins_tg))
-na_positions_union_tg <- union(na_positions_ascat_tg, na_positions_scevan_tg)
-
-ascat_bin_wins_autosomes_tg <- ascat_bin_wins_autosomes_tg[-na_positions_union_tg]
-scevan_bin_wins_tg <- scevan_bin_wins_tg[-na_positions_union_tg]
 
 ##### compute performance metrics
 precision_score_tg <- precision(ascat_bin_wins_autosomes_tg, scevan_bin_wins_tg)
