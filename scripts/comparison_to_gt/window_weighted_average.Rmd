@@ -1,107 +1,90 @@
----
-title: "Moving Weighted Average - Test on SCEVAN & ASCAT Segmentation Files"
-output: none
----
-
 # install dependencies
-```{r, eval=FALSE}
 if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-
+     install.packages("BiocManager")
+ 
 if (!require("IRanges", quietly = TRUE))
-    BiocManager::install("IRanges")
-```
+     BiocManager::install("IRanges")
 
-# import dependencies
-```{r}
+if (!require("Metrics", quietly = TRUE))
+  install.packages("Metrics")
+
+if (!require("ggplot2", quietly = TRUE))
+  install.packages("ggplot2")
+
+
+# load dependencies
 library(IRanges)
 library(dplyr)
-```
+#library(ggplot2)
+library(Metrics)
 
 
-# define envrionment variable (won't be used in this test, just writing it here so it's available for copy-paste into the version used to analyze all our data)
-```{r}
-# index <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID"))
-index <- 1
-```
+# indicate to R what iteration is running
+index <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID"))
 
-
-# load input mapping file
-```{r}
+# import config file
 map <- read.csv("/scratch/dgladish/benchmarking_spatial_scale/mapping_files/alg_out_paths.csv")
-print(paste("Analysis of sample", map$sample_id[index]))
-```
+
+# tell R what sample to analyze
+sample_id <- map$sample_id[index]
+print(paste("Analysis of sample", sample_id))
 
 
-
-# import data
-```{r}
+# import segmentation files
 ascat_segs <- read.delim(map$ascat_seg_path[index], stringsAsFactors = FALSE)
 scevan_segs <- read.delim(map$scevan_seg_path[index], stringsAsFactors = FALSE)
-```
 
-# import Ted's chromosome coordinates
-```{r}
+
+# add numerical chromosome column so R can loop over them
 path_chrom_lengths <- "/scratch/dgladish/benchmarking_spatial_scale/chrom_lengths/HG38.txt"
 chrom_lengths <- read.delim(path_chrom_lengths, stringsAsFactors = FALSE, header=F)
 chrom_lengths[, 3] <- sub("chr", "", chrom_lengths[, 1])
 
 chrom_lengths[, 3] <- sub("X", "23", chrom_lengths[, 3])
 chrom_lengths[, 3] <- sub("Y", "24", chrom_lengths[, 3])
-```
 
 
-# make copy number values relative to 2
-```{r}
-# ASCAT
+# make the copy number calls relative to 2 by subtracting 2
+## ASCAT
 ascat_segs$Copy_Number <- ascat_segs$Copy_Number-2
 print(ascat_segs$Copy_Number)
-```
 
-
-
-
-```{r}
-# SCEVAN
+## SCEVAN
 scevan_segs$CN <- scevan_segs$CN-2
 print(scevan_segs$CN)
-```
 
-# calculate window averages for ASCAT segments
-## add in an additional chromosome column to the ASCAT segmentation file
-```{r}
+
+# add a numerical column containing the chromosome data to the ASCAT segmentation file so that the data can be looped over chromosome by chromosome when doing the moving averaging of the copy number
 ascat_segs$Chromosome_numeric <- sub("chr", "", ascat_segs$Chromosome)
 ascat_segs$Chromosome_numeric <- sub("X", "23", ascat_segs$Chromosome_numeric)
 ascat_segs$Chromosome_numeric <- sub("Y", "24", ascat_segs$Chromosome_numeric)
 
 ascat_segs$Chromosome_numeric <- as.numeric(ascat_segs$Chromosome_numeric)
-```
 
 
-## define window size
-```{r}
+# define window size
 window_size <- 1000000
-```
 
-## calculate the # of windows roughly that will be used for each chromosome (HG38 lengths, not ASCAT, so results might be a bit different, but should be identical or very close)
-```{r}
+
+# estimate the number of chromosomes that will be used for each chromosome (not specific to any algorithm as HG38 lengths are used as chromosome lengths)
 windows_per_chrom <- ceiling(chrom_lengths[, 2] / window_size)
+names(windows_per_chrom) <- chrom_lengths$V1
+print("There should be around the following number windows for each chromosome:")
 print(windows_per_chrom)
-```
-## calculate the total # of windows roughly that will be used in this analysis
-```{r}
+
+
+
 total_windows <- sum(windows_per_chrom)
+print("There should be this many windows total:")
 print(total_windows)
-```
 
 
-
-## run the analysis
-```{r}
+# execute the moving weighted average
+## ascat
 ascat_WAs <- numeric() # vector will be filled by each iteration, first with the chromosome 1 windows, then chromosome 2, etc etc
 
 for (i in 1:max(ascat_segs$Chromosome_numeric)) {
-  #browser()
+
   ascat_segs_subset <- ascat_segs[which(ascat_segs$Chromosome_numeric==i), ] # create the subset of the data frame so that you are only analyzing 1 chromosome at a time
   
   seg_ranges <- IRanges(start = ascat_segs_subset$Start, end = ascat_segs_subset$End) 
@@ -111,7 +94,7 @@ for (i in 1:max(ascat_segs$Chromosome_numeric)) {
   windows <- IRanges(start = seq(1, chrom_length, by = window_size), width = window_size)
   
   ascat_loop_WAs <-  sapply(seq_along(windows), function(j) {
-    #browser()
+
     win <- windows[j]
     win_repeated <- rep(win, length(seg_ranges))
     overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
@@ -131,15 +114,13 @@ for (i in 1:max(ascat_segs$Chromosome_numeric)) {
   
   ascat_WAs <- c(ascat_WAs, ascat_loop_WAs)
 }
-```
 
-# Looks good! Now calculate moving averages for the SCEVAN data!
-## initialize an empty vector that will hold the output of the loop
-```{r}
+
+## scevan
 scevan_WAs <- numeric()
 
 for (i in 1:max(scevan_segs$Chr)) {
-  #browser()
+
   scevan_segs_subset <- scevan_segs[which(scevan_segs$Chr==i), ] # create the subset of the data frame so that you are only analyzing 1 chromosome at a time
   
   seg_ranges <- IRanges(start = scevan_segs_subset$Pos, end = scevan_segs_subset$End) # convert the data frame holding the subset of the segmentation data to an IRanges object so that the IRanges function pintersect() may be used on the data
@@ -150,7 +131,7 @@ for (i in 1:max(scevan_segs$Chr)) {
   
   # for each chromosome, this analysis will be looped, shifting the window each time (i.e. chr1 is first analyzed   with 1-1,000,000, then 1,000,001-2,000,000, etc. then repeat for chromosome 2, then 3, etc.).
   scevan_loop_WAs <- sapply(seq_along(windows), function(j) { 
-    #browser()
+
     win <- windows[j] # selects the window to use (e.g. 1-1,000,000)
     win_repeated <- rep(win, length(seg_ranges))
     overlaps <- pintersect(seg_ranges, win_repeated, resolve.empty = "start")
@@ -166,106 +147,321 @@ for (i in 1:max(scevan_segs$Chr)) {
     
     
   })
-  #browser()
+
   current_chrom <- scevan_segs_subset$Chr[1]
   for_names_scevan_loop_WAs <- sub(current_chrom, paste(c("chr", current_chrom), collapse=""), current_chrom)
   names(scevan_loop_WAs) <- rep(for_names_scevan_loop_WAs, times=length(scevan_loop_WAs))
   
   scevan_WAs <- c(scevan_WAs, scevan_loop_WAs)
 }
-```
-
-## do a quick investigation of the output so I understand what I am working with
-### NAs
-#### are there any NA values? if so, where are they localized/concentrated?
-##### ASCAT
-```{r}
-if (any(is.na(ascat_WAs))) {
-  print(paste("There are", sum(is.na(ascat_WAs)), "NAs in ascat_WAs! There was at least 1 window that did not have any segment overlap!"))
-  
-  # convert MA output vector to a list
-  #browser()
-  #original_order <- names(ascat_WAs)
-  ascat_WAs_list <- split(ascat_WAs, names(ascat_WAs))
-  na_positions_normalized_list <- lapply(ascat_WAs_list, function(x) {which(is.na(x)) / length(x)}) # extract locations of the NA values & normalize by chromosome length (indices closer to 0 will be front of the chromosome & those closer to 1 will be towards the end of the chromosome)
-  na_positions_normalized_vec <- unlist(na_positions_normalized_list, use.names = TRUE) # create a named vector from the list containing the normalized NA locations
-  #na_positions_normalized <- na_positions_normalized[original_order]
-  
-  # create a histogram visualizing the locations of the NA values
-  hist(na_positions_normalized_vec, breaks = 10, main = "ASCAT - Empty Window Locations",
-     xlab = "Normalized Window Position (Index in Vector / Vector Length)",
-     col = "#00F5FF", border = "white")
 
 
-  # bar plots
-  ## number of windows / chromosome
-  #browser()
-  original_order <- unique(names(ascat_WAs))
-  windows_per_chrom_ascat <- sapply(ascat_WAs_list, length)
-  windows_per_chrom_ascat <- windows_per_chrom_ascat[original_order]
-  
-  barplot(windows_per_chrom_ascat, las=2, col = "skyblue", main = "ASCAT - Total Windows Per Chromosome", ylim = c(0, 250))
-  
-  ## number of empty windows / chromosome
-  nas_per_chrs <- sapply(ascat_WAs_list, function(x) {sum(is.na(x))})
-  nas_per_chrs <- nas_per_chrs[original_order]
-  barplot(nas_per_chrs, las=2, col="blue", main = "ASCAT - Empty Windows Per Chromosome", ylim = c(0, 25))
-  
-  } else {
-  print("There are no NAs in ascat_WAs! All windows had at least 1 segment span them.")
-  }
-```
-##### SCEVAN 
-```{r}
-if (any(is.na(scevan_WAs))) {
-  print(paste("There are", sum(is.na(scevan_WAs)), "NAs in scevan_WAs! There was at least 1 window that did not have any segment overlap!"))
-  
-  # histogram
-  ## convert MA output vector to a list
-  scevan_WAs_list <- split(scevan_WAs, names(scevan_WAs))
-  
-  scevan_ordered_names <- unique(names(scevan_WAs))
-  scevan_WAs_list <- scevan_WAs_list[scevan_ordered_names]
-  
-  na_positions_normalized <- lapply(scevan_WAs_list, function(x) {which(is.na(x)) / length(x)}) # extract locations of the NA values & normalize by chromosome length (indices closer to 0 will be front of the chromosome & those closer to 1 will be towards the end of the chromosome)
-  na_positions_normalized <- unlist(na_positions_normalized, use.names = TRUE) # create a named vector from the list containing the normalized NA locations
-  
-  ## create a histogram visualizing the locations of the NA values
-  hist(na_positions_normalized, breaks = 10, main = "SCEVAN - Empty Window Locations",
-     xlab = "Normalized Window Position (Index in Vector / Vector Length)",
-     col = "deeppink", border = "white")
-  
-  # bar plots
-  ## number of windows / chromosome
-  windows_per_chrom_scevan <- sapply(scevan_WAs_list, length)
-  windows_per_chrom_scevan <- windows_per_chrom_scevan[original_order]
-  
-  barplot(windows_per_chrom_scevan, las=2, col = "#FFE1FF", main = "SCEVAN - Number of Total Windows Per Chromosome", ylim=c(0, 250))
-  
-  ## number of empty windows / chromosome
-  ## sum the number of NA windows for each chromosome
-  nas_per_chrs <- sapply(scevan_WAs_list, function(x) {sum(is.na(x))})
-  nas_per_chrs <- nas_per_chrs[original_order]
-  
-  ## create the bar plot showing the number of empty windows / chromosome
-  barplot(nas_per_chrs, las=2, col = "red", main = "SCEVAN - Number of Empty Windows Per Chromosome", ylim=c(0, 25))
-  
-  } else {
-    
-  print("There are no NAs in scevan_WAs! All windows had at least 1 segment span them.")
-    
-  }
-```
-##### Also, create a bar plot that shows the # of windows that do not have windows in them for SCEVAN
-```{r}
-num_NAs <-c(sum(is.na(scevan_WAs)), sum(is.na(ascat_WAs)))
-names(num_NAs) <- c("SCEVAN", "ASCAT")
-
-barplot(num_NAs, main="Number of Empty Windows for Each Algorithm", col=c("#C1440E", "#3B6BA5"), ylim=c(0, 100))
-```
-
-# Add back 2 to each of the windows. The mathematical property 
-```{r}
+# add 2 back to each of the elements
 ascat_WAs <- ascat_WAs+2
 scevan_WAs <- scevan_WAs+2
-```
+
+# do some checks of the output
+## show the actual number of windows that were used for each chromosome for each algorithm output
+print(paste(length(scevan_WAs), "windows were used to analyze the SCEVAN segmentation file, and", length(ascat_WAs), "were used for the ASCAT segmentation file."))
+
+
+## check if the same number of windows are used for each chromosome, for each algorithm
+### first, store the order of the elements so that the elements of the list outputted by split() can be put back in the same order
+original_name_order_ascat <- unique(names(ascat_WAs))
+original_name_order_scevan <- unique(names(scevan_WAs))
+
+### split the named vectors into lists using split()
+ascat_WAs_list <- split(ascat_WAs, names(ascat_WAs))
+scevan_WAs_list <- split(scevan_WAs, names(scevan_WAs))
+
+### restore the proper order of the list elements 
+ascat_WAs_list <- ascat_WAs_list[original_name_order_ascat]
+scevan_WAs_list <- scevan_WAs_list[original_name_order_scevan]
+
+
+
+scevan_windows_per_chr <- lapply(scevan_WAs_list, length)
+print(scevan_windows_per_chr)
+
+
+
+ascat_windows_per_chr <- lapply(ascat_WAs_list, length)
+print(ascat_windows_per_chr)
+
+
+print(paste("There are segmentation files from 2 algorithms being analyzed one chromosome at a time. Are the same number of windows used to analyze each chromosome?", identical(ascat_windows_per_chr[!(names(ascat_windows_per_chr) %in% c("chrX", "chrY"))], scevan_windows_per_chr)))
+
+
+# similarity metrics
+## distance & difference
+### compute distances & differences between the 1MB windows
+compute_distance <- function(pred_vec, gt_vec, sex_chrom) {
+  if (sex_chrom==FALSE) {
+    # subset the ascat WA output so that it does not contain elements from
+    gt_vec <- gt_vec[!(names(gt_vec) %in% c("chrX", "chrY"))]
+    
+
+    # compute distance element-wise
+    dist <- abs(pred_vec - gt_vec)
+  }
+}
+
+compute_difference <- function(pred_vec, gt_vec, sex_chrom) {
+  if (sex_chrom==FALSE) {
+    # subset the ascat WA output so that it does not contain elements from
+    gt_vec <- gt_vec[!(names(gt_vec) %in% c("chrX", "chrY"))]
+    
+
+    # compute distance element-wise
+    diff <- pred_vec - gt_vec
+  }
+}
+
+
+dists <- compute_distance(scevan_WAs, ascat_WAs, sex_chrom = FALSE)
+diffs <- compute_difference(scevan_WAs, ascat_WAs, sex_chrom = FALSE)
+
+
+### correlation
+cor <- cor(ascat_WAs[!names(ascat_WAs) %in% c("chrX", "chrY")], scevan_WAs, method="pearson", use="complete.obs") # confirmed this works!
+
+
+### get summary / descriptive statistics
+#### distances
+dists_summary <- summary(dists)
+dists_stdev <- sd(dists, na.rm = TRUE)
+names(dists_stdev) <- "stdev"
+
+dists_summary <- c(dists_summary, dists_stdev)
+print("Summary statistics of the distances")
+print(dists_summary)
+
+#### differences 
+diffs_summary <- summary(diffs)
+diffs_stdev <- sd(diffs, na.rm = TRUE)
+names(diffs_stdev) <- "stdev"
+
+diffs_summary <- c(diffs_summary, diffs_stdev)
+print("Summary statistics of the differences:")
+print(diffs_summary)
+
+
+## performance metrics
+### breaking up analysis; analyzing amps, dels, and norm calls separately
+#### prep input
+ascat_amp_wins <- numeric()
+ascat_del_wins <- numeric()
+ascat_norm_wins <- numeric()
+
+scevan_amp_wins <- numeric()
+scevan_del_wins <- numeric()
+scevan_norm_wins <- numeric()
+
+#convert_to_chr_amps <- function(x) {
+#  ifelse(x > 2, "amplified", "not_amplified")
+#}
+
+#convert_to_chr_dels <- function(x) {
+#  ifelse(x <= 2, "deleted", "not_deleted")
+#}
+
+#convert_to_chr_norms <- function(x) {
+#    ifelse(x > 2 | x < 2, "not_normal", "normal")
+#}
+
+convert_to_bin_amps <- function(x) {
+  ifelse(x > 2, 1, 0)
+}
+
+convert_to_bin_dels <- function(x) {
+  ifelse(x < 2, 1, 0)
+}
+
+convert_to_bin_norms <- function(x) { 
+    ifelse(x > 2 | x < 2, 0, 1) ## not sure if I'm assigning the right things as positive or negative class. Rn I have "non-normal" assigned as the negative class, and "normal" as the positive 
+}
+
+
+
+
+bin_wins <- list(
+  ascat_amp_wins = ascat_amp_wins,
+  ascat_del_wins = ascat_del_wins,
+  ascat_norm_wins = ascat_norm_wins,
+  scevan_amp_wins = scevan_amp_wins,
+  scevan_del_wins = scevan_del_wins,
+  scevan_norm_wins = scevan_norm_wins
+) #  all of the empty vectors into a single object
+
+int_wins <- list(ascat_WAs, scevan_WAs) # aggretae the input vectors containing the numerical copy number values of the windows 
+convert_to_chr_fxns <- list(convert_to_bin_amps, convert_to_bin_dels, convert_to_bin_norms)
+alg_names <- c("ascat", "scevan")
+vec_suffixes <- c("amp", "del", "norm")
+
+
+for (i in 1:2) {
+  for (j in 1:3) {
+    name <- paste0(alg_names[i], "_", vec_suffixes[j], "_wins")
+    bin_wins[[name]] <- convert_to_chr_fxns[[j]](int_wins[[i]])
+  }
+}
+
+# check to make sure that the function worked correctly. For each algorithm, the total number of 1s across all 3 vectors should equal the vector length (e.g. # 1s in amps, dels, and norms should = 3044, as with the way we set the code up, a window cannot be amplified and normal at the same time)
+if (sum(sapply(bin_wins[grep("ascat", names(bin_wins))], function(x) {sum(x==1, na.rm=T)}))!=(length(bin_wins[grep("ascat", names(bin_wins))][[1]])-sum(is.na(bin_wins[grep("ascat", names(bin_wins))][[1]])))) stop("At least 1 ASCAT window has been assigned a positive call twice")
+if (sum(sapply(bin_wins[grep("scevan", names(bin_wins))], function(x) {sum(x==1, na.rm=T)}))!=(length(bin_wins[grep("scevan", names(bin_wins))][[1]])-sum(is.na(bin_wins[grep("scevan", names(bin_wins))][[1]])))) stop("At least 1 SCEVAN window has been assigned a positive call twice")
+
+#ascat_amp_wins <- chr_wins$ascat_amp_wins
+#ascat_del_wins <- chr_wins$ascat_del_wins
+#ascat_norm_wins <- chr_wins$ascat_norm_wins
+
+#scevan_amp_wins <- chr_wins$scevan_amp_wins
+#scevan_del_wins <- chr_wins$scevan_del_wins
+#scevan_norm_wins <- chr_wins$scevan_norm_wins
+
+
+#### compute precision, recall, F1
+##### there are NAs in the vector elements of the bin_wins list. I will have to deal with them
+###### check if the NAs are in the same spot in each vector
+na_positions_ascat <- lapply(bin_wins[grep("ascat", names(bin_wins))], function(x) {which(is.na(x))})
+
+if (all(sapply(combn(seq_along(na_positions_ascat), 2, simplify = FALSE), 
+           function(idx) identical(na_positions_ascat[[idx[1]]], na_positions_ascat[[idx[2]]])))) {print("NAs present in the 3 ASCAT vectors are all in the same position")}
+
+
+
+na_positions_scevan <- lapply(bin_wins[grep("scevan", names(bin_wins))], function(x) {which(is.na(x))})
+
+if (all(sapply(combn(seq_along(na_positions_scevan), 2, simplify = FALSE), 
+               function(idx) identical(na_positions_scevan[[idx[1]]], na_positions_scevan[[idx[2]]])))) {print("NAs present in the 3 ASCAT vectors are all in the same position")}
+
+na_positions_all <- lapply(bin_wins, function(x) {which(is.na(x))})
+na_positions_autosomes <- lapply(na_positions_all, function(x) {
+  x <- x[!grepl("chrX", names(x))]
+  return(x)
+})
+
+if (all(sapply(combn(seq_along(bin_wins), 2, simplify = FALSE),
+               function(idx) identical(na_positions_autosomes[[idx[1]]], na_positions_autosomes[[idx[2]]])))) {print("NAs in ASCAT and SCEVAN vectors are all in the same position")
+} else {
+    print("NAs in the ASCAT vectors are not located at the same positions as NAs in the SCEVAN vectors")
+}
+
+
+###### Eliminate any element in the vector pairs that have an NA (i.e. if at least 1 window in a SCEVAN & ASCAT vector pair that corresponds to the same genomic position has value NA, eliminate the window from both vectors)
+bin_wins_autosomes <- lapply(bin_wins, function(x) {
+  x <- x[!grepl("chrX", names(x))]
+  return(x)
+})
+
+na_positions_ascat_autosomes <- na_positions_autosomes[grep("ascat", names(na_positions_autosomes))][[1]]
+na_positions_scevan <- na_positions_autosomes[grep("scevan", names(na_positions_autosomes))][[1]] # scevan by default only outputs autosomal data
+
+na_positions_autosomes_union <- union(na_positions_ascat_autosomes, na_positions_scevan)
+
+bin_wins_autosomes <- lapply(bin_wins_autosomes, function(x) {
+  x <- x[-c(na_positions_autosomes_union)]
+  return(x)
+})
+
+
+
+##### f1 function from Metrics package doesn't work as intended (see documentation for Metrics package). Create own F1 R function to use as an alternative.
+F1 <- function(precision, recall) {
+  result <- (2*(precision*recall))/(precision+recall)
+  return(result)
+}
+
+
+##### amps
+###### precision
+precision_score_amps <- precision(bin_wins_autosomes$ascat_amp_wins, bin_wins_autosomes$scevan_amp_wins)
+
+###### recall
+recall_score_amps <- recall(bin_wins_autosomes$ascat_amp_wins, bin_wins_autosomes$scevan_amp_wins)
+
+
+###### F1
+f1_score_amps <- F1(precision_score_amps, recall_score_amps)
+
+##### dels
+###### precision
+precision_score_dels <- precision(bin_wins_autosomes$ascat_del_wins, bin_wins_autosomes$scevan_del_wins)
+
+###### recall
+recall_score_dels <- recall(bin_wins_autosomes$ascat_del_wins, bin_wins_autosomes$scevan_del_wins)
+
+
+###### F1
+f1_score_dels <- F1(precision_score_dels, recall_score_dels)
+
+##### norms
+###### precision
+precision_score_norms <- precision(bin_wins_autosomes$ascat_norm_wins, bin_wins_autosomes$scevan_norm_wins)
+
+###### recall
+recall_score_norms <- recall(bin_wins_autosomes$ascat_norm_wins, bin_wins_autosomes$scevan_norm_wins)
+
+
+###### F1
+f1_score_norms <- F1(precision_score_norms, recall_score_norms)
+
+
+##### aggregate results into a single data frame
+#performanceMets_sep_precisions <- c(precision_score_amps, precision_score_dels, precision_score_norms)
+#performanceMets_sep_recalls <- c(recall_score_amps, recall_score_dels, recall_score_norms)
+#performanceMets_sep_f1s <- c(f1_score_amps, f1_score_dels, f1_score_norms)
+
+#performanceMets_sep_df <- data.frame(precision=performanceMets_sep_precisions, recall=performanceMets_sep_recalls, f1=performanceMets_sep_f1s)
+#rownames(performanceMets_sep_df) <- c("amplification", "deletion", "normal")
+
+performanceMets_sep_df <- data.frame(
+  precision = c(precision_score_amps, precision_score_dels, precision_score_norms),
+  recall    = c(recall_score_amps, recall_score_dels, recall_score_norms),
+  f1        = c(f1_score_amps, f1_score_dels, f1_score_norms),
+  row.names = c("amplification", "deletion", "normal")
+)
+
+
+#### keeping everything together analysis
+##### setup for the performance metric functions
+convert_to_bin_tg <- function(x) { 
+    ifelse(x > 2 | x < 2, 1, 0) # positive calls = anything above or below 2, negative calls = 2
+}
+
+ascat_bin_wins_tg <- convert_to_bin_tg(ascat_WAs)
+scevan_bin_wins_tg <- convert_to_bin_tg(scevan_WAs)
+
+###### eliminate any windows associated with sex chromosomes & any windows where either SCEVAN or ASCAT contains an NA
+ascat_bin_wins_autosomes_tg <- ascat_bin_wins_tg[-which(names(ascat_bin_wins_tg) %in% c("chrX", "chrY"))]
+
+na_positions_ascat_tg <- which(is.na(ascat_bin_wins_autosomes_tg))
+na_positions_scevan_tg <- which(is.na(scevan_bin_wins_tg))
+na_positions_union_tg <- union(na_positions_ascat_tg, na_positions_scevan_tg)
+
+ascat_bin_wins_autosomes_tg <- ascat_bin_wins_autosomes_tg[-na_positions_union_tg]
+scevan_bin_wins_tg <- scevan_bin_wins_tg[-na_positions_union_tg]
+
+##### compute performance metrics
+precision_score_tg <- precision(ascat_bin_wins_autosomes_tg, scevan_bin_wins_tg)
+recall_score_tg <- recall(ascat_bin_wins_autosomes_tg, scevan_bin_wins_tg)
+f1_score_tg <- F1(precision_score_tg, recall_score_tg)
+
+performanceMets_tg_df <- data.frame(
+  precision = precision_score_tg,
+  recall = recall_score_tg,
+  f1 = f1_score_tg
+)
+
+
+
+# merge results into 1 object and then save as an rds file
+mwa_out_list <- list(ascat_windows = ascat_WAs, scevan_windows = scevan_WAs, distances = dists, differences = diffs, dists_summary = dists_summary, diffs_summary = diffs_summary, pearson_correlation = cor, performanceMets_sep = performanceMets_sep_df, performanceMets_tg = performanceMets_tg_df) 
+
+MA_out_dir <- Sys.getenv("OUT_DIR")
+#MA_out_dir <- "/scratch/dgladish/benchmarking_spatial_scale/analysis_outs/single_parameter_test/distances"
+
+distances_out_filename <- paste0(MA_out_dir, "/", sample_id, "_mwa_outs.rds")
+
+saveRDS(mwa_out_list, file=distances_out_filename)
+
+## could also include a line down here to produce an empty text file, but I feel like the output of the RDS file already accomplishes this
